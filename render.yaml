@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: vera-bot
+    runtime: python
+    plan: free
+    pythonVersion: 3.11
+    buildCommand: pip install -r requirements.txt
+    startCommand: python vera_server.py
+    envVars:
+      - key: GROQ_API_KEY
+        scope: run
+        sync: false

@@ -1,0 +1,19 @@
+[build]
+packages = ["python311"]
+
+[env]
+GROQ_API_KEY = ""
+
+[framework]
+name = "python"
+version = "3.11"
+
+[[build.stages.build.commands]]
+cmd = "pip install -r requirements.txt"
+
+[[env.productions]]
+GROQ_API_KEY = ""
+
+[[functions."vera"]]
+source = "vera_server.py"
+handler = "VeraServer().app"
