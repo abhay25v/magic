@@ -8,7 +8,7 @@ This is a complete implementation of the **magicpin AI Challenge** — a product
 ✅ Uses a 4-context framework for rich message personalization
 ✅ Implements 5 required HTTP endpoints as specified
 ✅ Maintains stateful conversations with idempotent context storage
-✅ Uses Claude 3.5 Sonnet for intelligent message generation
+✅ Uses Groq-powered LLMs for intelligent message generation
 ✅ Deploys to public URLs (Render, Railway, Docker, Heroku)
 
 ---
@@ -57,7 +57,7 @@ magicpin's Vera is an AI assistant that engages merchants on WhatsApp. The chall
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │ LLM Composition (Claude 3.5 Sonnet):                     │   │
+│  │ LLM Composition (Groq SDK):                              │   │
 │  │  • Build prompt with 4 contexts                          │   │
 │  │  • Generate message (specific, contextual)              │   │
 │  │  • Extract JSON: {body, cta, rationale}                 │   │
@@ -106,7 +106,7 @@ Response:
 ```json
 {
   "team_name": "Vera Implementation",
-  "model": "claude-3-5-sonnet-20241022",
+  "model": "llama-3.1-8b-instant",
   "approach": "4-context framework with LLM composition",
   "version": "1.0.0"
 }
@@ -186,7 +186,7 @@ pip install -r requirements.txt
 
 # Create .env
 cp .env.example .env
-# Edit .env and add your API key from https://console.anthropic.com/
+# Edit .env and add your API key from https://console.groq.com/keys
 
 # Run server
 python vera_server.py
@@ -195,16 +195,17 @@ python vera_server.py
 curl http://localhost:8000/v1/healthz
 ```
 
-### 2. Deploy to Render (5 minutes) — **Recommended**
+### 2. Deploy to Render Free Tier (5 minutes) — **Recommended**
 
 1. Push code to GitHub
 2. Go to https://dashboard.render.com
 3. Click "New +" → "Web Service" → Connect GitHub repo
 4. Build command: `pip install -r requirements.txt`
 5. Start command: `python vera_server.py`
-6. Add environment variable: `ANTHROPIC_API_KEY` = your key
-7. Deploy!
-8. Get public URL: `https://vera-XXXXX.onrender.com`
+6. Add environment variable: `GROQ_API_KEY` = your key
+7. Optional: `GROQ_MODEL` = `llama-3.1-8b-instant`
+8. Deploy!
+9. Get public URL: `https://vera-XXXXX.onrender.com`
 
 ### 3. Deploy to Railway (3 minutes)
 
@@ -219,7 +220,8 @@ railway login
 railway init
 
 # Add API key
-railway variables set ANTHROPIC_API_KEY=sk-ant-...
+railway variables set GROQ_API_KEY=gsk_...
+railway variables set GROQ_MODEL=llama-3.1-8b-instant
 
 # Deploy
 git push
@@ -231,7 +233,7 @@ Railway auto-detects Python and deploys. Your URL is auto-generated.
 
 ```bash
 docker build -t vera .
-docker run -e ANTHROPIC_API_KEY="sk-ant-..." -p 8000:8000 vera
+docker run -e GROQ_API_KEY="gsk_..." -e GROQ_MODEL="llama-3.1-8b-instant" -p 8000:8000 vera
 ```
 
 ---
@@ -284,7 +286,7 @@ message = compose(
 Example:
 > "Dr. Meera, JIDA's Oct issue has **3-month fluoride recall** data — **38% better caries outcomes**. Relevant for your **124 high-risk adults**. Details: […]"
 
-### 5. LLM-Powered (Claude 3.5 Sonnet)
+### 5. LLM-Powered (Groq SDK)
 - Flexible composition (not templated)
 - Context-aware tone and vocabulary
 - Generates structured JSON (body, CTA, rationale)
@@ -391,7 +393,7 @@ The judge scores on:
 
 ## Deployment Checklist
 
-- [ ] API key obtained from https://console.anthropic.com/
+- [ ] API key obtained from https://console.groq.com/keys
 - [ ] Server runs locally: `python vera_server.py`
 - [ ] Endpoints respond: `curl http://localhost:8000/v1/healthz`
 - [ ] Deployed to public URL (Render recommended)
@@ -415,7 +417,7 @@ STATUS:
 ✅ Stateful conversation management
 ✅ 4-context composition
 ✅ Specific message content (numbers, offers, dates)
-✅ LLM-powered (Claude 3.5 Sonnet)
+✅ LLM-powered (Groq SDK)
 ✅ Judge simulator passing all scenarios
 
 TEAM: [Your Name]
@@ -474,7 +476,7 @@ For production, add:
 
 ## Next Steps
 
-1. **Get API key** from https://console.anthropic.com/
+1. **Get API key** from https://console.groq.com/keys
 2. **Run locally** to test
 3. **Deploy to Render** (5 minutes)
 4. **Run judge simulator** to validate
