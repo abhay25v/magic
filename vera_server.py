@@ -48,6 +48,7 @@ class ConversationState:
     messages: List[Message] = field(default_factory=list)
     trigger_id: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    auto_reply_count: int = 0  # Track auto-reply detections for early exit
 
 # =============================================================================
 # VERA SERVER
@@ -289,8 +290,32 @@ class VeraServer:
         
         conv = self.conversations[conversation_id]
         
+        # Check for STOP message - must always return action='end'
+        if self._detect_stop_message(reply_body):
+            return {
+                "accepted": True,
+                "conversation_id": conversation_id,
+                "vera_response": "Got it. We'll stop reaching out.",
+                "action": "end",
+                "cta": "none",
+                "rationale": "STOP message detected"
+            }
+        
         # Check for auto-reply patterns (WhatsApp Business canned responses)
         is_auto_reply = self._detect_auto_reply(reply_body, reply_from)
+        
+        # Handle auto-reply detection: wait on first, end after 2 detections
+        if is_auto_reply and reply_from == "merchant":
+            conv.auto_reply_count += 1
+            if conv.auto_reply_count >= 2:
+                return {
+                    "accepted": True,
+                    "conversation_id": conversation_id,
+                    "vera_response": "Got it. We'll follow up when you're available.",
+                    "action": "end",
+                    "cta": "none",
+                    "rationale": "Auto-reply detected twice"
+                }
         
         # Store the reply
         conv.messages.append(Message(
@@ -318,22 +343,25 @@ class VeraServer:
             customer_data = self.contexts["customer"][conv.customer_id].payload
         
         try:
-            # Choose composition strategy based on who replied
-            if reply_from == "customer" and customer_data:
+            # Choose composition strategy based on from_role (customer vs merchant)
+            if reply_from == "customer":
+                # Customer message - provide customer-voiced response
                 response_data = self._compose_customer_reply(
                     category_ctx.payload if category_ctx else {},
                     merchant_data,
-                    customer_data,
+                    customer_data if customer_data else {},
                     reply_body,
                     conv.messages
                 )
             elif is_auto_reply:
+                # Merchant auto-reply - wait and acknowledge
                 response_data = self._compose_auto_reply_handling(
                     category_ctx.payload if category_ctx else {},
                     merchant_data,
                     reply_body
                 )
             else:
+                # Regular merchant message - merchant-focused response
                 response_data = self._compose_reply(
                     category_ctx.payload if category_ctx else {},
                     merchant_data,
@@ -359,6 +387,7 @@ class VeraServer:
                 "accepted": True,
                 "conversation_id": conversation_id,
                 "vera_response": vera_response,
+                "action": response_data.get("action", "continue"),
                 "cta": response_data.get("cta", "open_ended"),
                 "rationale": response_data.get("rationale", "Contextual response"),
                 "auto_reply_detected": is_auto_reply
@@ -371,6 +400,7 @@ class VeraServer:
                 "accepted": True,
                 "conversation_id": conversation_id,
                 "vera_response": fallback,
+                "action": "continue",
                 "cta": "open_ended",
                 "rationale": "Fallback response due to composition error"
             }
@@ -436,6 +466,22 @@ class VeraServer:
         
         return result
     
+    def _detect_stop_message(self, message: str) -> bool:
+        """Detect STOP message"""
+        stop_patterns = [
+            r"^\s*stop\s*$",
+            r"^\s*stop\s+messaging\s*$",
+            r"^\s*no\s+further\s*$",
+            r"^\s*unsubscribe\s*$"
+        ]
+        
+        message_lower = message.strip().lower()
+        for pattern in stop_patterns:
+            if re.search(pattern, message_lower):
+                return True
+        
+        return False
+    
     def _detect_auto_reply(self, message: str, from_user: str) -> bool:
         """Detect WhatsApp Business auto-reply patterns"""
         if from_user != "merchant":
@@ -447,7 +493,9 @@ class VeraServer:
             r"appreciate your message",
             r"auto.?reply",
             r"will respond soon",
-            r"during business hours"
+            r"during business hours",
+            r"out of office",
+            r"auto response"
         ]
         
         message_lower = message.lower()
@@ -460,8 +508,8 @@ class VeraServer:
     def _get_fallback_response(self, reply_from: str, has_customer: bool) -> str:
         """Get a safe fallback response"""
         if reply_from == "customer":
-            return "Thanks for your interest! The merchant will respond with specific booking details."
-        return "Thanks for the update. Let me help you with that."
+            return "Awesome! Let me connect you with the merchant for booking."
+        return "Got it! Thanks for letting me know."
     
     def _compose_customer_reply(self, category: Dict, merchant: Dict, customer: Dict, user_message: str, conversation_history: List[Message]) -> Dict[str, Any]:
         """Compose reply when customer messages"""
@@ -534,6 +582,16 @@ class VeraServer:
         performance = merchant.get("performance", {})
         signals = merchant.get("signals", [])
         
+        # Handle perf_dip trigger: fix delta_pct parsing
+        trigger_processed = dict(trigger)
+        if trigger_processed.get("trigger_type") == "perf_dip" and "payload" in trigger_processed:
+            payload = trigger_processed["payload"]
+            if "delta_pct" in payload:
+                # Interpret as percentage: -0.50 means -50%, multiply by 100
+                delta_pct = payload["delta_pct"]
+                if isinstance(delta_pct, (int, float)) and -1 < delta_pct < 1:
+                    trigger_processed["payload"]["delta_pct"] = delta_pct * 100
+        
         # Extract voice constraints
         tone = voice.get('tone', 'professional')
         vocabulary = voice.get('vocabulary', [])
@@ -560,14 +618,15 @@ PEER BENCHMARKS:
 - Avg CTR: {peer_stats.get('avg_ctr', 0):.3f}
 
 TRIGGER:
-{json.dumps(trigger, indent=2)}
+{json.dumps(trigger_processed, indent=2)}
 
 🔴 STRICT REQUIREMENTS:
 1. Use ONLY category-appropriate tone and vocabulary
-2. NEVER use retail-promo spam language
-3. Include specific service names, prices, or dates (not generic "deals")
-4. Max 320 characters
-5. Be professional, helpful, and relevant to the trigger
+2. NEVER use formal phrases like "Dear", "Request your preparedness" or retail-promo spam language
+3. Use warm, peer-to-peer tone like talking to a colleague
+4. Include specific service names, prices, or dates (not generic "deals")
+5. Max 320 characters
+6. Be professional, helpful, and relevant to the trigger
 
 Respond ONLY with valid JSON:
 {{"body": "message (max 320 chars)", "cta": "call_to_action", "suppression_key": "key", "rationale": "why this message"}}
@@ -577,13 +636,13 @@ Respond ONLY with valid JSON:
     def _get_tone_guidance(self, category: str, tone: str) -> str:
         """Get category-specific tone guidance"""
         guidance_map = {
-            "dentists": "Clinical, professional, health-focused. Use medical/dental terms appropriately. Focus on patient care, hygiene, and health outcomes. AVOID aggressive marketing language.",
-            "salons": "Warm, professional, beauty-conscious. Focus on expertise and care. Use specific service names. AVOID discount-focused language.",
-            "restaurants": "Welcoming, food-focused, service-oriented. Use cuisine/dish names. Focus on experience and quality.",
-            "pharmacies": "Professional, health-focused, trustworthy. Use clinical terminology appropriately. Focus on health and wellness.",
-            "gyms": "Motivational, health-focused, supportive. Focus on fitness goals and member wellbeing. Use fitness terminology."
+            "dentists": "Warm, peer-like, health-focused. Speak like a colleague. Use clinical terms naturally. Focus on patient care and health outcomes. Talk about specific services (e.g., 'Root Canal' not 'treatment'). AVOID formal phrases like 'Dear' or 'request your preparedness'.",
+            "salons": "Warm, friendly, expert. Like chatting with a stylist colleague. Focus on specific services. Use accessible language. AVOID corporate-sounding pitch.",
+            "restaurants": "Friendly, food-focused, inviting. Like recommending to a friend. Use dish/cuisine names. Focus on experience. AVOID robotic marketing tone.",
+            "pharmacies": "Helpful, accessible, health-conscious. Speak naturally like a healthcare professional. Use clear language. Focus on wellness. AVOID formal bureaucratic tone.",
+            "gyms": "Encouraging, friendly, supportive. Like talking to a fitness buddy. Focus on goals and progress. AVOID motivational speaker clichés."
         }
-        return guidance_map.get(category, f"Maintain a {tone} and professional tone. Use category-appropriate language.")
+        return guidance_map.get(category, f"Be warm and peer-like, not corporate. Use natural language. Avoid formal, corporate tone.")
     
     def _build_reply_prompt(self, category: Dict, merchant: Dict, user_message: str, customer: Optional[Dict], conversation_history: List[Message], reply_from: str = "merchant") -> str:
         """Build the LLM prompt for merchant reply composition"""
@@ -593,7 +652,7 @@ Respond ONLY with valid JSON:
         voice = category.get("voice", {})
         tone_guidance = self._get_tone_guidance(category_slug, voice.get('tone', 'professional'))
         
-        prompt = f"""You are Vera helping {merchant_name} respond to a merchant message in the {category_slug} category.
+        prompt = f"""You are Vera helping {merchant_name} respond to a message in the {category_slug} category.
 
 MERCHANT: {merchant_name}
 MERCHANT'S MESSAGE: {user_message}
@@ -606,20 +665,20 @@ Recent conversation:
         
         prompt += f"""
 
-Compose a merchant-focused response that:
-1. Acknowledges the merchant's message
-2. Is actionable and supportive
+Compose a warm, peer-like response that:
+1. Acknowledges their message naturally
+2. Is helpful and actionable
 3. Max 300 characters
-4. Maintains professional, category-appropriate tone (NO retail-promo spam)
-5. Offers next steps or resources
+4. Sounds like a colleague, not a corporate bot (NO formal phrases like 'Dear' or 'Reply YES to confirm')
+5. Offers clear next steps
 
 Respond ONLY with valid JSON:
-{{"body": "your response (max 300 chars)", "cta": "next_step", "rationale": "why this response"}}
+{{"body": "your response (max 300 chars)", "cta": "continue", "rationale": "why this response"}}
 """
         return prompt
     
     def _build_customer_reply_prompt(self, category: Dict, merchant: Dict, customer: Dict, user_message: str, conversation_history: List[Message]) -> str:
-        """Build the LLM prompt for customer reply composition"""
+        """Build the LLM prompt for customer reply composition - warm, peer-like, customer-voiced"""
         
         merchant_name = merchant.get("identity", {}).get("name", "Merchant")
         category_slug = merchant.get("category_slug", "")
@@ -627,12 +686,15 @@ Respond ONLY with valid JSON:
         voice = category.get("voice", {})
         tone_guidance = self._get_tone_guidance(category_slug, voice.get('tone', 'professional'))
         
-        prompt = f"""You are Vera helping customer {customer_name} book or engage with {merchant_name} ({category_slug}).
+        # Build customer-specific tone
+        customer_tone = f"{tone_guidance}\nSPECIFIC FOR CUSTOMERS: Be warm, encouraging, and helpful. Speak directly to the customer. Sound like a friend helping them book."
+        
+        prompt = f"""You are Vera helping {customer_name} engage with {merchant_name} ({category_slug}).
 
 CUSTOMER MESSAGE: {user_message}
 MERCHANT: {merchant_name}
 CATEGORY: {category_slug}
-TONE GUIDANCE: {tone_guidance}
+TONE GUIDANCE: {customer_tone}
 
 Recent conversation:
 """
@@ -641,15 +703,15 @@ Recent conversation:
         
         prompt += f"""
 
-Compose a customer-focused response that:
-1. Confirms or clarifies the customer's intent
-2. Provides specific booking details or next steps
-3. Is warm and professional
+Compose a warm, customer-voiced response that:
+1. Confirms or clarifies what the customer wants
+2. Provides specific next steps (time, service name, price)
+3. Sounds warm and encouraging, like a friend helping them
 4. Max 350 characters
-5. Routes to merchant for confirmation if needed
+5. Clear path to booking confirmation
 
 Respond ONLY with valid JSON:
-{{"body": "your response (max 350 chars)", "cta": "confirm_booking", "rationale": "booking flow"}}
+{{"body": "your response (max 350 chars)", "action": "continue", "cta": "confirm_booking", "rationale": "booking flow"}}
 """
         return prompt
     
